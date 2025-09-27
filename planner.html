@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>چرخه مطالعه و پاداش</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root { --teal:#00bfa5; --aqua:#4dd0e1; --bg:#1e1e1e; --card:#2a2a2a; --text:#e0e0e0; --line:#444; }
+    body { font-family:sans-serif; background:var(--bg); color:var(--text); direction:rtl; padding:12px; }
+    .container { max-width:900px; margin:auto; }
+    .card { background:var(--card); border-radius:12px; padding:12px; margin:12px 0; }
+    h1,h2 { color:var(--teal); border-bottom:1px solid var(--teal); padding-bottom:6px; margin:0 0 8px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    button { background:var(--teal); color:#fff; border:none; cursor:pointer; padding:8px 12px; border-radius:8px; }
+    button.secondary { background:#444; }
+    input,select { width:100%; padding:8px; border-radius:8px; border:1px solid var(--line); background:#262626; color:#e0e0e0; }
+    ul { list-style:none; padding:0; margin:0; }
+    li { background:#333; margin:6px 0; padding:10px; border-radius:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #progressChart { width:100%; max-width:700px; height:320px; }
+    .muted { color:#aaa; font-size:.9rem; margin-top:6px; }
+    .field { display:flex; flex-direction:column; margin-bottom:12px; }
+    .field label { margin-bottom:6px; font-weight:bold; color:var(--teal); }
+    .split { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    @media (max-width:640px){ .split { grid-template-columns:1fr; } }
+    .fileline { display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
+    canvas.circle { width:40px; height:40px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>چرخه مطالعه و پاداش</h1>
+
+  <!-- ورودی‌ها -->
+  <div class="card">
+    <h2>ورودی‌ها</h2>
+    <div class="split">
+      <div class="field">
+        <label for="freeHours">زمان آزاد امروز (ساعت.دقیقه):</label>
+        <input type="text" id="freeHours" value="2.35" placeholder="مثلاً 2.10 یا 1.45">
+      </div>
+      <div class="field">
+        <label for="mood">مود:</label>
+        <select id="mood">
+          <option value="good">خوب (۴۰ دقیقه)</option>
+          <option value="mid">متوسط (۳۰ دقیقه)</option>
+          <option value="bad">بد (۲۰ دقیقه)</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="coursesInput">دروس:</label>
+      <input type="text" id="coursesInput" placeholder="مثلاً: ریاضی، فیزیک">
+    </div>
+    <div class="row">
+      <button onclick="generatePlan()">تولید برنامه</button>
+      <button class="secondary" onclick="resetDay()">ریست امروز</button>
+      <button onclick="saveToday()">💾 ذخیره امروز</button>
+    </div>
+    <div id="summary" class="muted"></div>
+  </div>
+
+  <!-- مطالعه -->
+  <div class="card">
+    <h2>مطالعه امروز</h2>
+    <ul id="plan"></ul>
+    <div class="row">
+      <button onclick="showReward()">🎁 انتخاب پاداش</button>
+    </div>
+    <div id="rewardArea" class="muted"></div>
+  </div>
+
+  <!-- خلاصه -->
+  <div class="card">
+    <h2>خلاصه پایانی</h2>
+    <div id="finalSummary">هنوز چیزی ثبت نشده</div>
+    <div class="row" style="margin-top:8px;">
+      <label><input type="checkbox" id="sportCheck" onchange="updateFinalSummary()"> ورزش</label>
+      <label><input type="checkbox" id="spiritualCheck" onchange="updateFinalSummary()"> معنویات</label>
+    </div>
+  </div>
+
+  <!-- نمودار -->
+  <div class="card">
+    <h2>نمودار پیشرفت</h2>
+    <div class="row">
+      <button onclick="showChart('week')">۷ روز اخیر</button>
+      <button onclick="showChart('month')">۳۰ روز اخیر</button>
+      <button onclick="showChart('year')">۱ سال اخیر</button>
+    </div>
+    <canvas id="progressChart"></canvas>
+    <div id="chartStatus" class="muted"></div>
+  </div>
+
+  <!-- بکاپ -->
+  <div class="card">
+    <h2>بکاپ و بازیابی</h2>
+    <div class="fileline">
+      <button onclick="downloadBackup()">⬇️ دانلود بکاپ JSON</button>
+      <input type="file" id="backupFile" accept=".json" onchange="uploadBackup(event)">
+      <label for="backupFile">⬆️ آپلود بکاپ JSON</label>
+    </div>
+    <div id="backupStatus" class="muted"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // وضعیت‌ها
+  let timers = {};
+  let totalStudyMinutes = 0;
+  let totalRewardMinutes = 0;
+  let targetMinutes = 0;     // هدف مطالعه (ورودی اولیه روز)
+  let goalReached = false;
+  let rewardRemaining = 0, rewardInterval = null;
+  const DEFAULT_REWARD_MIN = 15; // دقیقه
+  let chart = null;
+
+  // تبدیل ساعت.دقیقه به دقیقه (ایمن)
+  function parseCustomHours(str){
+    if(!str) return 0;
+    str = String(str).trim();
+    if(!str) return 0;
+    if(str.includes(".")){
+      const parts = str.split(".");
+      const h = parseInt(parts[0]) || 0;
+      const mRaw = parseInt(parts[1]);
+      const m = isNaN(mRaw) ? 0 : Math.max(0, Math.min(59, mRaw));
+      return h*60 + m;
+    }
+    const h = parseInt(str);
+    return (isNaN(h) ? 0 : h*60);
+  }
+
+  // اندازه بلوک بر اساس مود
+  function blockByMood(m){ return m==="good" ? 40 : (m==="mid" ? 30 : 20); }
+
+  // تقسیم با کاهش فشار
+  function generateAdaptiveBlocks(totalMinutes, mood){
+    const block = blockByMood(mood);
+    if(totalMinutes <= 0) return [];
+    const count = Math.floor(totalMinutes / block);
+    const remainder = totalMinutes % block;
+    const half = Math.floor(block / 2);
+    let blocks = [];
+
+    if(remainder === 0){
+      for(let i=0;i<count;i++) blocks.push(block);
+    } else if (count === 0){
+      if(remainder <= half){ blocks.push(remainder); }
+      else { blocks.push(half); blocks.push(remainder - half); }
+    } else if (remainder <= half){
+      blocks.push(block + remainder);
+      for(let i=1;i<count;i++) blocks.push(block);
+    } else {
+      blocks.push(block + half);
+      blocks.push(block + (remainder - half));
+      for(let i=2;i<count;i++) blocks.push(block);
+    }
+    return blocks;
+  }
+
+  // دروس
+  function parseCourses(){
+    const raw = document.getElementById('coursesInput').value.trim();
+    if(!raw) return ["ریاضی","فیزیک"];
+    return raw.split(/[,،]/).map(s => s.trim()).filter(Boolean);
+  }
+
+  // دایره پیشرفت
+  function drawCircle(id, p){
+    const c = document.getElementById(id);
+    if(!c) return;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0,0,c.width,c.height);
+    ctx.beginPath(); ctx.arc(20,20,18,0,2*Math.PI); ctx.strokeStyle="#444"; ctx.lineWidth=4; ctx.stroke();
+    ctx.beginPath();
+    const clamped = Math.max(0, Math.min(1, p));
+    ctx.arc(20,20,18,-Math.PI/2,(2*Math.PI*clamped)-Math.PI/2);
+    ctx.strokeStyle="#4dd0e1"; ctx.lineWidth=4; ctx.stroke();
+  }
+
+  function updateBlockUI(i){
+    const rem = timers[i]?.remaining ?? 0;
+    const m = String(Math.floor(rem/60)).padStart(2,'0');
+    const s = String(rem % 60).padStart(2,'0');
+    const t = document.getElementById(`timer-${i}`);
+    if(t) t.textContent = `${m}:${s}`;
+    const total = timers[i]?.total ?? 1;
+    const progress = (total - rem) / total;
+    drawCircle(`circle-${i}`, progress);
+  }
+
+  function startBlock(i, mins){
+    if(!timers[i]) return;
+    if(timers[i].interval) return;
+    timers[i].interval = setInterval(()=>{
+      timers[i].remaining--;
+      if(timers[i].remaining < 0) timers[i].remaining = 0;
+      updateBlockUI(i);
+      if(timers[i].remaining <= 0){
+        clearInterval(timers[i].interval);
+        timers[i].interval = null;
+        finishBlock(i, mins);
+        alert(`بلوک ${i+1} تمام شد!`);
+      }
+    }, 1000);
+  }
+
+  function stopBlock(i){
+    if(timers[i]?.interval){
+      clearInterval(timers[i].interval);
+      timers[i].interval = null;
+      updateBlockUI(i);
+    }
+  }
+
+  function finishBlock(i, mins){
+    if(!timers[i]) return;
+    if(!timers[i].done){
+      totalStudyMinutes += mins;
+      timers[i].done = true;
+      updateFinalSummary();
+    }
+  }
+
+  // تولید برنامه
+  function generatePlan(customStr = null){
+    try{
+      const mood = document.getElementById('mood').value;
+      const total = customStr ? parseCustomHours(customStr) : parseCustomHours(document.getElementById('freeHours').value);
+      const summaryEl = document.getElementById('summary');
+      const ul = document.getElementById('plan');
+
+      if(total <= 0){
+        summaryEl.textContent = "زمان واردشده معتبر نیست.";
+        ul.innerHTML = "";
+        return;
+      }
+
+      // اگر اولین چرخه روز است، هدف و جمع‌ها را ست کن
+      if(!customStr && targetMinutes === 0){
+        targetMinutes = total;
+        goalReached = false;
+        totalStudyMinutes = 0;
+        totalRewardMinutes = 0;
+        updateFinalSummary();
+      }
+
+      const blocks = generateAdaptiveBlocks(total, mood);
+      const courses = parseCourses();
+
+      ul.innerHTML = "";
+      timers = {};
+      blocks.forEach((mins, i) => {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <span>${mins} دقیقه: ${courses[i % courses.length]}</span>
+          <canvas class="circle" id="circle-${i}" width="40" height="40"></canvas>
+          <span id="timer-${i}">${String(mins).padStart(2,'0')}:00</span>
+          <button onclick="startBlock(${i},${mins})">شروع</button>
+          <button onclick="stopBlock(${i})">توقف</button>
+        `;
+        ul.appendChild(li);
+        timers[i] = { remaining: mins*60, total: mins*60, interval: null, done: false };
+        drawCircle(`circle-${i}`, 0);
+      });
+
+      summaryEl.textContent =
+        `زمان کل: ${Math.floor(total/60)} ساعت و ${total%60} دقیقه | مود: ${mood} | بلوک‌ها: ${blocks.join(" + ")}`;
+    } catch(e){
+      alert("⛔ خطا در تولید برنامه: " + e.message);
+    }
+  }
+
+  // پاداش
+  function showReward(){
+    const opts = ["فیلم","سریال","کتاب","حرف زدن","نوشیدن","خوردن","نرمش","دراز کشیدن"];
+    document.getElementById('rewardArea').innerHTML =
+      `<div style="margin-bottom:6px">پاداش انتخاب کن:</div>` +
+      opts.map(o=>`<button onclick="startReward('${o}')">${o}</button>`).join(' ');
+  }
+
+  function startReward(choice){
+    rewardRemaining = DEFAULT_REWARD_MIN * 60;
+    if(rewardInterval){ clearInterval(rewardInterval); rewardInterval = null; }
+    const area = document.getElementById('rewardArea');
+    area.innerHTML = `
+      <div style="margin-bottom:6px;">پاداش: ${choice}</div>
+      <div class="row">
+        <canvas class="circle" id="rewardCircle" width="40" height="40"></canvas>
+        <span id="rewardTimer">${String(DEFAULT_REWARD_MIN).padStart(2,'0')}:00</span>
+        <button onclick="startRewardTimer()">شروع</button>
+        <button onclick="stopRewardTimer()">توقف</button>
+      </div>
+    `;
+    updateRewardUI();
+  }
+
+  function updateRewardUI(){
+    const m = String(Math.floor(rewardRemaining/60)).padStart(2,'0');
+    const s = String(rewardRemaining % 60).padStart(2,'0');
+    const el = document.getElementById('rewardTimer');
+    if(el) el.textContent = `${m}:${s}`;
+    const total = DEFAULT_REWARD_MIN * 60;
+    const progress = (total - rewardRemaining) / total;
+    drawCircle('rewardCircle', progress);
+  }
+
+  function startRewardTimer(){
+    if(rewardInterval) return;
+    rewardInterval = setInterval(()=>{
+      rewardRemaining--;
+      if(rewardRemaining < 0) rewardRemaining = 0;
+      updateRewardUI();
+      if(rewardRemaining <= 0){
+        clearInterval(rewardInterval);
+        rewardInterval = null;
+        addRewardSpent(DEFAULT_REWARD_MIN * 60);
+        alert("زمان تفریح تمام شد!");
+        askNextStudy();
+      }
+    }, 1000);
+  }
+
+  function stopRewardTimer(){
+    if(rewardInterval){
+      clearInterval(rewardInterval);
+      rewardInterval = null;
+      const spentSec = DEFAULT_REWARD_MIN * 60 - rewardRemaining;
+      addRewardSpent(spentSec);
+    }
+    updateRewardUI();
+    alert("تفریح متوقف شد ✅");
+    askNextStudy();
+  }
+
+  function addRewardSpent(spentSec){
+    if(spentSec <= 0) return;
+    totalRewardMinutes += Math.floor(spentSec / 60);
+    updateFinalSummary();
+  }
+
+  // ادامه مطالعه با فرمت ساعت.دقیقه
+  function askNextStudy(){
+    const hoursStr = prompt("چند ساعت دیگه وقت داری؟ (مثل 1.30 یا 0.45)");
+    if(hoursStr === null) return;
+    const mins = parseCustomHours(hoursStr);
+    if(isNaN(mins) || mins <= 0){ alert("ورودی نامعتبر."); return; }
+    generatePlan(hoursStr);
+    document.getElementById('plan').scrollIntoView({ behavior:'smooth' });
+  }
+
+  // خلاصه + تبریک هدف
+  function updateFinalSummary(){
+    const studyHrs = (totalStudyMinutes/60).toFixed(1);
+    const rewardHrs = (totalRewardMinutes/60).toFixed(1);
+    const totalHrs = ((totalStudyMinutes+totalRewardMinutes)/60).toFixed(1);
+    const sport = document.getElementById('sportCheck')?.checked ? "✅ ورزش | " : "";
+    const spiritual = document.getElementById('spiritualCheck')?.checked ? "✅ معنویات | " : "";
+    document.getElementById('finalSummary').textContent =
+      `${sport}${spiritual}📚 مطالعه: ${studyHrs} ساعت | 🎉 تفریح: ${rewardHrs} ساعت | ⏳ مجموع: ${totalHrs} ساعت`;
+    if(!goalReached && targetMinutes > 0 && totalStudyMinutes >= targetMinutes){
+      goalReached = true;
+      alert("🎉 تبریک! به هدف مطالعه امروزت رسیدی.");
+    }
+  }
+
+  // ذخیره‌سازی روزانه در localStorage (مقادیر واقعی)
+  function saveToday(){
+    const today = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+    const record = {
+      date: today,
+      study: totalStudyMinutes,
+      reward: totalRewardMinutes,
+      sport: !!document.getElementById('sportCheck')?.checked,
+      spiritual: !!document.getElementById('spiritualCheck')?.checked,
+      mood: document.getElementById('mood')?.value || ''
+    };
+    let data = JSON.parse(localStorage.getItem('studyLog') || "[]");
+    data = data.filter(r => r.date !== today);
+    data.push(record);
+    localStorage.setItem('studyLog', JSON.stringify(data));
+    alert("✅ امروز ذخیره شد (محلی).");
+  }
+
+  // اتوسیو هر ۳ ساعت
+  setInterval(saveToday, 3*60*60*1000);
+
+  // نمودارهای نرم با تاریخ شمسی
+  function showChart(range){
+    let data = JSON.parse(localStorage.getItem('studyLog') || "[]");
+    const statusEl = document.getElementById('chartStatus');
+    if(!data.length){
+      statusEl.textContent = "⛔ داده‌ای برای نمایش وجود ندارد.";
+      if(chart) chart.destroy();
+      return;
+    }
+    const now = new Date();
+    let cutoff;
+    if(range === 'week'){ cutoff = new Date(now.getTime() - 7*24*60*60*1000); }
+    else if(range === 'month'){ cutoff = new Date(now.getTime() - 30*24*60*60*1000); }
+    else { cutoff = new Date(now.getTime() - 365*24*60*60*1000); }
+    data = data.filter(r => new Date(r.date) >= cutoff);
+    data.sort((a,b) => new Date(a.date) - new Date(b.date));
+    if(!data.length){
+      statusEl.textContent = "⛔ داده‌ای در این بازه نیست.";
+      if(chart) chart.destroy();
+      return;
+    }
+    statusEl.textContent = "";
+
+    const labels = data.map(r=>{
+      const d = new Date(r.date);
+      return new Intl.DateTimeFormat('fa-IR-u-ca-persian',{year:'numeric',month:'numeric',day:'numeric'}).format(d);
+    });
+    const studyData = data.map(r => (r.study/60).toFixed(2));
+    const rewardData = data.map(r => (r.reward/60).toFixed(2));
+
+    if(chart) chart.destroy();
+    const ctx = document.getElementById('progressChart').getContext('2d');
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'ساعت مطالعه', data: studyData, borderColor: 'rgba(0,191,165,1)', backgroundColor: 'rgba(0,191,165,0.15)', tension: 0.4, fill: true },
+          { label: 'ساعت تفریح', data: rewardData, borderColor: 'rgba(77,208,225,1)', backgroundColor: 'rgba(77,208,225,0.15)', tension: 0.4, fill: true }
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#e0e0e0' } },
+          tooltip: { callbacks: { label: (ctx)=> `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(2)} ساعت` } }
+        },
+        scales: {
+          x: { ticks: { color:'#e0e0e0' } },
+          y: { beginAtZero: true, ticks: { color:'#e0e0e0' } }
+        }
+      }
+    });
+  }
+
+  // ریست روز
+  function resetDay(){
+    targetMinutes = 0;
+    goalReached = false;
+    totalStudyMinutes = 0;
+    totalRewardMinutes = 0;
+    timers = {};
+    document.getElementById('plan').innerHTML = "";
+    document.getElementById('summary').textContent = "";
+    updateFinalSummary();
+    alert("روز جدید آماده شد.");
+  }
+
+  // بکاپ دانلود/آپلود با مدیریت هنگ
+  function downloadBackup(){
+    const data = localStorage.getItem('studyLog') || "[]";
+    const blob = new Blob([data], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "studyLog-backup.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=> URL.revokeObjectURL(url), 1000);
+    document.getElementById('backupStatus').textContent = "✅ بکاپ دانلود شد.";
+  }
+
+  function uploadBackup(event){
+    const file = event.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e){
+      try {
+        const json = JSON.parse(e.target.result);
+        if(Array.isArray(json)){
+          localStorage.setItem('studyLog', JSON.stringify(json));
+          document.getElementById('backupStatus').textContent = "✅ بکاپ آپلود و جایگزین شد.";
+        } else {
+          document.getElementById('backupStatus').textContent = "⛔ فایل معتبر نیست.";
+        }
+      } catch(err){
+        document.getElementById('backupStatus').textContent = "⛔ خطا در خواندن فایل.";
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // آماده‌سازی اولیه
+  updateFinalSummary();
+</script>
+</body>
+</html>
